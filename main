@@ -135,8 +135,6 @@ def gen_pseudo_legal(board, side):
                     rr2 = r + 2*dir_
                     if r == start_row and in_bounds(rr2, c) and board[rr2][c] == '.':
                         moves.append(Move((r,c),(rr2,c)))
-
-                # captures
                 for dc in (-1, 1):
                     cc = c + dc
                     rr = r + dir_
