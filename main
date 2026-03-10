@@ -315,7 +315,7 @@ def draw_board(screen, board, selected=None, legal_targets=None, font=None):
                 rect = txt.get_rect(center=(x + SQUARE//2, y + SQUARE//2))
                 screen.blit(txt, rect)
 
-    # border
+    
     pygame.draw.rect(screen, (220,220,220), (MARGIN, MARGIN, 8*SQUARE, 8*SQUARE), 2)
 
 
