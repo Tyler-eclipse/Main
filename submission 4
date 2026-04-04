@@ -1,0 +1,669 @@
+import os
+import random
+import pygame
+from dataclasses import dataclass
+
+PIECE_VALUES = {
+    'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 0,
+    'p': -100, 'n': -320, 'b': -330, 'r': -500, 'q': -900, 'k': 0,
+    '.': 0
+}
+
+@dataclass(frozen=True)
+class Move:
+    fr: tuple
+    to: tuple
+    promo: str = None
+    is_castle: bool = False
+    is_en_passant: bool = False
+
+
+def in_bounds(r, c):
+    return 0 <= r < 8 and 0 <= c < 8
+
+
+def color_of(p):
+    if p == '.':
+        return None
+    return 'w' if p.isupper() else 'b'
+
+
+def enemy(color):
+    return 'b' if color == 'w' else 'w'
+
+
+def find_king(board, color):
+    k = 'K' if color == 'w' else 'k'
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == k:
+                return (r, c)
+    return None
+
+
+def initial_state():
+    return {
+        "ep": None,
+        "castle": {
+            "wK": True,
+            "wQ": True,
+            "bK": True,
+            "bQ": True,
+        }
+    }
+
+
+def is_square_attacked(board, sq, by_color):
+    r, c = sq
+
+    if by_color == 'w':
+        for dc in (-1, 1):
+            rr, cc = r + 1, c + dc
+            if in_bounds(rr, cc) and board[rr][cc] == 'P':
+                return True
+    else:
+        for dc in (-1, 1):
+            rr, cc = r - 1, c + dc
+            if in_bounds(rr, cc) and board[rr][cc] == 'p':
+                return True
+
+    knight = 'N' if by_color == 'w' else 'n'
+    for dr, dc in [(-2, -1), (-2, 1), (-1, -2), (-1, 2),
+                   (1, -2), (1, 2), (2, -1), (2, 1)]:
+        rr, cc = r + dr, c + dc
+        if in_bounds(rr, cc) and board[rr][cc] == knight:
+            return True
+
+    king = 'K' if by_color == 'w' else 'k'
+    for dr in (-1, 0, 1):
+        for dc in (-1, 0, 1):
+            if dr == 0 and dc == 0:
+                continue
+            rr, cc = r + dr, c + dc
+            if in_bounds(rr, cc) and board[rr][cc] == king:
+                return True
+
+    bishops = {'B', 'Q'} if by_color == 'w' else {'b', 'q'}
+    for dr, dc in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+        rr, cc = r + dr, c + dc
+        while in_bounds(rr, cc):
+            p = board[rr][cc]
+            if p != '.':
+                if p in bishops:
+                    return True
+                break
+            rr += dr
+            cc += dc
+
+    rooks = {'R', 'Q'} if by_color == 'w' else {'r', 'q'}
+    for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+        rr, cc = r + dr, c + dc
+        while in_bounds(rr, cc):
+            p = board[rr][cc]
+            if p != '.':
+                if p in rooks:
+                    return True
+                break
+            rr += dr
+            cc += dc
+
+    return False
+
+
+def make_move(board, state, mv: Move):
+    fr_r, fr_c = mv.fr
+    to_r, to_c = mv.to
+    piece = board[fr_r][fr_c]
+
+    undo = {
+        "captured": board[to_r][to_c],
+        "prev_ep": state["ep"],
+        "prev_castle": state["castle"].copy(),
+        "rook_move": None,
+        "ep_captured_square": None,
+    }
+
+    state["ep"] = None
+
+    if mv.is_en_passant:
+        cap_r = fr_r
+        cap_c = to_c
+        undo["captured"] = board[cap_r][cap_c]
+        undo["ep_captured_square"] = (cap_r, cap_c)
+        board[cap_r][cap_c] = '.'
+
+    board[to_r][to_c] = piece
+    board[fr_r][fr_c] = '.'
+
+    if mv.is_castle:
+        if piece == 'K':
+            if to_c == 6:
+                board[7][5] = board[7][7]
+                board[7][7] = '.'
+                undo["rook_move"] = ((7, 7), (7, 5))
+            else:
+                board[7][3] = board[7][0]
+                board[7][0] = '.'
+                undo["rook_move"] = ((7, 0), (7, 3))
+        elif piece == 'k':
+            if to_c == 6:
+                board[0][5] = board[0][7]
+                board[0][7] = '.'
+                undo["rook_move"] = ((0, 7), (0, 5))
+            else:
+                board[0][3] = board[0][0]
+                board[0][0] = '.'
+                undo["rook_move"] = ((0, 0), (0, 3))
+
+    if piece == 'P' and fr_r == 6 and to_r == 4:
+        state["ep"] = (5, fr_c)
+    elif piece == 'p' and fr_r == 1 and to_r == 3:
+        state["ep"] = (2, fr_c)
+
+    if piece == 'K':
+        state["castle"]["wK"] = False
+        state["castle"]["wQ"] = False
+    elif piece == 'k':
+        state["castle"]["bK"] = False
+        state["castle"]["bQ"] = False
+
+    if piece == 'R':
+        if (fr_r, fr_c) == (7, 0):
+            state["castle"]["wQ"] = False
+        elif (fr_r, fr_c) == (7, 7):
+            state["castle"]["wK"] = False
+    elif piece == 'r':
+        if (fr_r, fr_c) == (0, 0):
+            state["castle"]["bQ"] = False
+        elif (fr_r, fr_c) == (0, 7):
+            state["castle"]["bK"] = False
+
+    captured_square = (to_r, to_c)
+    if mv.is_en_passant:
+        captured_square = undo["ep_captured_square"]
+
+    captured_piece = undo["captured"]
+    if captured_piece == 'R':
+        if captured_square == (7, 0):
+            state["castle"]["wQ"] = False
+        elif captured_square == (7, 7):
+            state["castle"]["wK"] = False
+    elif captured_piece == 'r':
+        if captured_square == (0, 0):
+            state["castle"]["bQ"] = False
+        elif captured_square == (0, 7):
+            state["castle"]["bK"] = False
+
+    if mv.promo is not None:
+        board[to_r][to_c] = mv.promo
+
+    return undo
+
+
+def unmake_move(board, state, mv: Move, undo):
+    fr_r, fr_c = mv.fr
+    to_r, to_c = mv.to
+
+    state["ep"] = undo["prev_ep"]
+    state["castle"] = undo["prev_castle"].copy()
+
+    moved_piece = board[to_r][to_c]
+    original_piece = board[to_r][to_c]
+
+    if mv.promo is not None:
+        original_piece = 'P' if moved_piece.isupper() else 'p'
+
+    board[fr_r][fr_c] = original_piece
+
+    if mv.is_en_passant:
+        board[to_r][to_c] = '.'
+        cap_r, cap_c = undo["ep_captured_square"]
+        board[cap_r][cap_c] = undo["captured"]
+    else:
+        board[to_r][to_c] = undo["captured"]
+
+    if undo["rook_move"] is not None:
+        rook_from, rook_to = undo["rook_move"]
+        rf_r, rf_c = rook_from
+        rt_r, rt_c = rook_to
+        board[rf_r][rf_c] = board[rt_r][rt_c]
+        board[rt_r][rt_c] = '.'
+
+
+def gen_pseudo_legal(board, state, side):
+    moves = []
+
+    for r in range(8):
+        for c in range(8):
+            p = board[r][c]
+            if p == '.' or color_of(p) != side:
+                continue
+
+            if p in ('P', 'p'):
+                dir_ = -1 if p == 'P' else 1
+                start_row = 6 if p == 'P' else 1
+                promotion_row = 0 if p == 'P' else 7
+                promo_piece = 'Q' if p == 'P' else 'q'
+
+                rr = r + dir_
+                if in_bounds(rr, c) and board[rr][c] == '.':
+                    if rr == promotion_row:
+                        moves.append(Move((r, c), (rr, c), promo=promo_piece))
+                    else:
+                        moves.append(Move((r, c), (rr, c)))
+
+                    rr2 = r + 2 * dir_
+                    if r == start_row and in_bounds(rr2, c) and board[rr2][c] == '.':
+                        moves.append(Move((r, c), (rr2, c)))
+
+                for dc in (-1, 1):
+                    cc = c + dc
+                    rr = r + dir_
+                    if not in_bounds(rr, cc):
+                        continue
+
+                    target = board[rr][cc]
+                    if target != '.' and color_of(target) == enemy(side):
+                        if rr == promotion_row:
+                            moves.append(Move((r, c), (rr, cc), promo=promo_piece))
+                        else:
+                            moves.append(Move((r, c), (rr, cc)))
+
+                    if state["ep"] == (rr, cc):
+                        adj = board[r][cc]
+                        if adj != '.' and color_of(adj) == enemy(side) and adj.lower() == 'p':
+                            moves.append(Move((r, c), (rr, cc), is_en_passant=True))
+
+            elif p in ('N', 'n'):
+                for dr, dc in [(-2, -1), (-2, 1), (-1, -2), (-1, 2),
+                               (1, -2), (1, 2), (2, -1), (2, 1)]:
+                    rr, cc = r + dr, c + dc
+                    if not in_bounds(rr, cc):
+                        continue
+                    target = board[rr][cc]
+                    if target == '.' or color_of(target) == enemy(side):
+                        moves.append(Move((r, c), (rr, cc)))
+
+            elif p in ('B', 'b', 'R', 'r', 'Q', 'q'):
+                dirs = []
+                if p.lower() in ('b', 'q'):
+                    dirs += [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+                if p.lower() in ('r', 'q'):
+                    dirs += [(-1, 0), (1, 0), (0, -1), (0, 1)]
+
+                for dr, dc in dirs:
+                    rr, cc = r + dr, c + dc
+                    while in_bounds(rr, cc):
+                        target = board[rr][cc]
+                        if target == '.':
+                            moves.append(Move((r, c), (rr, cc)))
+                        else:
+                            if color_of(target) == enemy(side):
+                                moves.append(Move((r, c), (rr, cc)))
+                            break
+                        rr += dr
+                        cc += dc
+
+            elif p in ('K', 'k'):
+                for dr in (-1, 0, 1):
+                    for dc in (-1, 0, 1):
+                        if dr == 0 and dc == 0:
+                            continue
+                        rr, cc = r + dr, c + dc
+                        if not in_bounds(rr, cc):
+                            continue
+                        target = board[rr][cc]
+                        if target == '.' or color_of(target) == enemy(side):
+                            moves.append(Move((r, c), (rr, cc)))
+
+                if side == 'w' and (r, c) == (7, 4):
+                    if state["castle"]["wK"]:
+                        if board[7][5] == '.' and board[7][6] == '.' and board[7][7] == 'R':
+                            if not is_square_attacked(board, (7, 4), 'b') \
+                               and not is_square_attacked(board, (7, 5), 'b') \
+                               and not is_square_attacked(board, (7, 6), 'b'):
+                                moves.append(Move((7, 4), (7, 6), is_castle=True))
+                    if state["castle"]["wQ"]:
+                        if board[7][1] == '.' and board[7][2] == '.' and board[7][3] == '.' and board[7][0] == 'R':
+                            if not is_square_attacked(board, (7, 4), 'b') \
+                               and not is_square_attacked(board, (7, 3), 'b') \
+                               and not is_square_attacked(board, (7, 2), 'b'):
+                                moves.append(Move((7, 4), (7, 2), is_castle=True))
+
+                elif side == 'b' and (r, c) == (0, 4):
+                    if state["castle"]["bK"]:
+                        if board[0][5] == '.' and board[0][6] == '.' and board[0][7] == 'r':
+                            if not is_square_attacked(board, (0, 4), 'w') \
+                               and not is_square_attacked(board, (0, 5), 'w') \
+                               and not is_square_attacked(board, (0, 6), 'w'):
+                                moves.append(Move((0, 4), (0, 6), is_castle=True))
+                    if state["castle"]["bQ"]:
+                        if board[0][1] == '.' and board[0][2] == '.' and board[0][3] == '.' and board[0][0] == 'r':
+                            if not is_square_attacked(board, (0, 4), 'w') \
+                               and not is_square_attacked(board, (0, 3), 'w') \
+                               and not is_square_attacked(board, (0, 2), 'w'):
+                                moves.append(Move((0, 4), (0, 2), is_castle=True))
+
+    return moves
+
+
+def gen_legal_moves(board, state, side):
+    legal = []
+    for mv in gen_pseudo_legal(board, state, side):
+        undo = make_move(board, state, mv)
+        ksq = find_king(board, side)
+        ok = (ksq is not None) and (not is_square_attacked(board, ksq, enemy(side)))
+        unmake_move(board, state, mv, undo)
+        if ok:
+            legal.append(mv)
+    return legal
+
+
+def order_moves(board, moves):
+    return sorted(
+        moves,
+        key=lambda mv: abs(PIECE_VALUES[board[mv.to[0]][mv.to[1]]]),
+        reverse=True
+    )
+
+
+def evaluate(board, state):
+    score = 0
+
+    for r in range(8):
+        for c in range(8):
+            p = board[r][c]
+            if p == '.':
+                continue
+
+            score += PIECE_VALUES[p]
+
+            # stronger center bonus
+            if 2 <= r <= 5 and 2 <= c <= 5:
+                score += 15 if p.isupper() else -15
+
+            # piece development
+            if p == 'N' and r < 7:
+                score += 15
+            if p == 'B' and r < 7:
+                score += 15
+            if p == 'n' and r > 0:
+                score -= 15
+            if p == 'b' and r > 0:
+                score -= 15
+
+    # mobility (BIG improvement)
+    white_moves = len(gen_legal_moves(board, state, 'w'))
+    black_moves = len(gen_legal_moves(board, state, 'b'))
+    score += 2 * (white_moves - black_moves)
+
+    return score
+
+
+def alphabeta(board, state, side, depth, alpha, beta):
+    moves = order_moves(board, gen_legal_moves(board, state, side))
+
+    if depth == 0 or not moves:
+        ksq = find_king(board, side)
+        if not moves and ksq and is_square_attacked(board, ksq, enemy(side)):
+            return -99999 if side == 'w' else 99999
+        return evaluate(board, state)
+
+    if side == 'w':
+        best = -10**9
+        for mv in moves:
+            undo = make_move(board, state, mv)
+            val = alphabeta(board, state, 'b', depth - 1, alpha, beta)
+            unmake_move(board, state, mv, undo)
+            best = max(best, val)
+            alpha = max(alpha, val)
+            if beta <= alpha:
+                break
+        return best
+    else:
+        best = 10**9
+        for mv in moves:
+            undo = make_move(board, state, mv)
+            val = alphabeta(board, state, 'w', depth - 1, alpha, beta)
+            unmake_move(board, state, mv, undo)
+            best = min(best, val)
+            beta = min(beta, val)
+            if beta <= alpha:
+                break
+        return best
+
+
+def choose_engine_move(board, state, side, depth=3):
+    moves = gen_legal_moves(board, state, side)
+    if not moves:
+        return None
+
+    best_moves = []
+
+    if side == 'w':
+        best_val = -10**9
+        for mv in moves:
+            undo = make_move(board, state, mv)
+            val = alphabeta(board, state, 'b', depth - 1, -10**9, 10**9)
+            unmake_move(board, state, mv, undo)
+
+            if val > best_val:
+                best_val = val
+                best_moves = [mv]
+            elif val == best_val:
+                best_moves.append(mv)
+    else:
+        best_val = 10**9
+        for mv in moves:
+            undo = make_move(board, state, mv)
+            val = alphabeta(board, state, 'w', depth - 1, -10**9, 10**9)
+            unmake_move(board, state, mv, undo)
+
+            if val < best_val:
+                best_val = val
+                best_moves = [mv]
+            elif val == best_val:
+                best_moves.append(mv)
+
+    return random.choice(best_moves)
+
+
+def initial_board():
+    return [
+        list("rnbqkbnr"),
+        list("pppppppp"),
+        list("........"),
+        list("........"),
+        list("........"),
+        list("........"),
+        list("PPPPPPPP"),
+        list("RNBQKBNR"),
+    ]
+
+
+SQUARE = 80
+MARGIN = 40
+WIDTH = MARGIN * 2 + SQUARE * 8
+HEIGHT = MARGIN * 2 + SQUARE * 8
+
+PIECE_IMAGES = {}
+
+
+def load_images():
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    pieces_dir = os.path.join(base_dir, "pieces-basic-png")
+    mapping = {
+        'P': 'white-pawn.png',
+        'N': 'white-knight.png',
+        'B': 'white-bishop.png',
+        'R': 'white-rook.png',
+        'Q': 'white-queen.png',
+        'K': 'white-king.png',
+        'p': 'black-pawn.png',
+        'n': 'black-knight.png',
+        'b': 'black-bishop.png',
+        'r': 'black-rook.png',
+        'q': 'black-queen.png',
+        'k': 'black-king.png',
+    }
+
+    for piece, filename in mapping.items():
+        path = os.path.join(pieces_dir, filename)
+        img = pygame.image.load(path).convert_alpha()
+        img = pygame.transform.scale(img, (SQUARE, SQUARE))
+        PIECE_IMAGES[piece] = img
+
+
+def draw_board(screen, board, selected=None, legal_targets=None):
+    screen.fill((30, 30, 30))
+
+    for r in range(8):
+        for c in range(8):
+            x = MARGIN + c * SQUARE
+            y = MARGIN + r * SQUARE
+            light = (r + c) % 2 == 0
+            color = (235, 235, 208) if light else (119, 148, 85)
+            pygame.draw.rect(screen, color, (x, y, SQUARE, SQUARE))
+
+            if selected == (r, c):
+                pygame.draw.rect(screen, (255, 215, 0), (x, y, SQUARE, SQUARE), 4)
+
+            if legal_targets and (r, c) in legal_targets:
+                pygame.draw.circle(screen, (20, 20, 20), (x + SQUARE // 2, y + SQUARE // 2), 10)
+
+            p = board[r][c]
+            if p != '.':
+                screen.blit(PIECE_IMAGES[p], (x, y))
+
+    pygame.draw.rect(screen, (220, 220, 220), (MARGIN, MARGIN, 8 * SQUARE, 8 * SQUARE), 2)
+
+
+def pixel_to_square(pos):
+    x, y = pos
+    x -= MARGIN
+    y -= MARGIN
+    if x < 0 or y < 0:
+        return None
+    c = x // SQUARE
+    r = y // SQUARE
+    if 0 <= r < 8 and 0 <= c < 8:
+        return (int(r), int(c))
+    return None
+
+
+def game_status(board, state, side_to_move):
+    moves = gen_legal_moves(board, state, side_to_move)
+    if moves:
+        return None
+
+    ksq = find_king(board, side_to_move)
+    if ksq and is_square_attacked(board, ksq, enemy(side_to_move)):
+        return "Checkmate! Black wins." if side_to_move == 'w' else "Checkmate! White wins."
+    return "Stalemate!"
+
+
+def main():
+    pygame.init()
+    screen = pygame.display.set_mode((WIDTH, HEIGHT))
+    pygame.display.set_caption("Basic Chess (Pygame)")
+    load_images()
+
+    small = pygame.font.SysFont("consolas", 22)
+
+    board = initial_board()
+    state = initial_state()
+    side_to_move = 'w'
+    player_side = 'w'
+    engine_side = 'b'
+
+    selected = None
+    legal_targets = set()
+    depth = 3
+    running = True
+    clock = pygame.time.Clock()
+    message = ""
+
+    while running:
+        clock.tick(60)
+
+        status_now = game_status(board, state, side_to_move)
+        if status_now is not None:
+            message = status_now
+        else:
+            message = ""
+
+        if side_to_move == engine_side and not message:
+            mv = choose_engine_move(board, state, engine_side, depth=depth)
+            if mv is not None:
+                make_move(board, state, mv)
+                side_to_move = enemy(side_to_move)
+            selected = None
+            legal_targets = set()
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_r:
+                    board = initial_board()
+                    state = initial_state()
+                    side_to_move = 'w'
+                    selected = None
+                    legal_targets = set()
+                    message = ""
+                elif event.key == pygame.K_1:
+                    depth = 1
+                elif event.key == pygame.K_2:
+                    depth = 2
+                elif event.key == pygame.K_3:
+                    depth = 3
+
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if side_to_move != player_side or message:
+                    continue
+
+                sq = pixel_to_square(pygame.mouse.get_pos())
+                if sq is None:
+                    continue
+
+                r, c = sq
+                p = board[r][c]
+
+                if selected is None:
+                    if p != '.' and color_of(p) == player_side:
+                        selected = sq
+                        moves = gen_legal_moves(board, state, player_side)
+                        legal_targets = {mv.to for mv in moves if mv.fr == selected}
+                else:
+                    moves = gen_legal_moves(board, state, player_side)
+                    chosen = None
+                    for mv in moves:
+                        if mv.fr == selected and mv.to == sq:
+                            chosen = mv
+                            break
+
+                    if chosen is not None:
+                        make_move(board, state, chosen)
+                        side_to_move = enemy(side_to_move)
+
+                    selected = None
+                    legal_targets = set()
+
+        draw_board(screen, board, selected, legal_targets)
+
+        status = f"Turn: {'White' if side_to_move == 'w' else 'Black'} | Depth: {depth} | 1-3 change depth | R reset"
+        txt = small.render(status, True, (230, 230, 230))
+        screen.blit(txt, (MARGIN, 10))
+
+        if message:
+            msg = small.render(message, True, (255, 200, 200))
+            screen.blit(msg, (MARGIN, HEIGHT - 28))
+
+        pygame.display.flip()
+
+    pygame.quit()
+
+
+if __name__ == "__main__":
+    main()
